@@ -1,0 +1,274 @@
+---
+title: "Pitcher Usage Tree"
+author: "Richard Legler"
+date: "June 11, 2024"
+output: 
+  rmdformats::readthedown:
+    number_sections: true
+    highlight: tango
+    df_print: paged
+    center: true
+---
+
+```{r setup, include=FALSE}
+# Set working directory
+knitr::opts_knit$set(root.dir = 'C:/Users/richa/OneDrive/Documents/Hyannis Harbor Hawks/Cape Code Data')
+
+# Clear environment
+rm(list=ls())
+
+# Import libraries
+library(dplyr)
+library(tidyr)
+library(readr)
+```
+
+# Import Data
+
+```{r}
+df <- read_csv("TM_2024_reg_szn_NCAA.csv")
+```
+
+## Keep Necessary Data
+
+```{r}
+df <- df[,c("Pitcher", "BatterSide", "Balls", "Strikes", "TaggedPitchType")]
+```
+
+# Clean Data
+## Unidentified Pitches
+
+```{r}
+df <- df %>%
+  filter(TaggedPitchType != "Undefined")
+```
+
+
+## Batters
+
+```{r}
+df <- df %>%
+  filter(BatterSide != "Undefined")
+```
+
+## Strikes
+
+```{r}
+df <- df %>%
+  filter(Strikes <= 2)
+```
+
+## Balls
+
+```{r}
+df <- df %>%
+  filter(Balls <= 3)
+```
+
+# Transform Data
+## Changeup to ChangeUp
+
+```{r}
+df <- df %>%
+  mutate(TaggedPitchType = ifelse(TaggedPitchType == "Changeup", "ChangeUp", TaggedPitchType))
+```
+
+## Add Count
+
+```{r}
+df <- df %>%
+  mutate(Count = paste(Balls, Strikes, sep = "-")) %>%
+  select(-Balls, -Strikes)
+```
+
+## Simplify Pitch Groupings
+
+```{r}
+df <- df %>%
+  mutate(Pitch = case_when(
+    TaggedPitchType %in% c("ChangeUp", "Splitter") ~ "CH/SP",
+    TaggedPitchType %in% c("Fastball", "FourSeamFastBall", "OneSeamFastBall", "TwoSeamFastBall", "Sinker") ~ "FastSink",
+    TRUE ~ TaggedPitchType
+  ))
+```
+
+# Split Data
+
+Data frame for each pitcher and batter handedness
+
+```{r}
+split_df <- split(df, f=list(df$Pitcher,df$BatterSide))
+```
+
+# Function
+
+```{r}
+summarize_split <- function(df) {
+  df %>%
+    group_by(Pitcher, BatterSide, Count, Pitch) %>%
+    summarise(n = n(), .groups = 'drop') %>%
+    group_by(Pitcher, BatterSide, Count) %>%
+    mutate(total_pitches = sum(n),
+           PitchTypePct = round((n / total_pitches),3)) %>%
+    ungroup() %>%
+    select(-total_pitches)
+}
+```
+
+
+```{r}
+output <- bind_rows(lapply(split_df, summarize_split))
+```
+
+# Export
+
+```{r}
+# Save the output to a csv file
+write.csv(output, "C:/Users/richa/OneDrive/Documents/Hyannis Harbor Hawks/Pitcher Usage Trees/Pitch_Tree_Data_NCAA_2024.csv", row.names = FALSE)
+```
+
+# Plotting
+## Packages
+
+```{r}
+library(ggplot2)
+library(grid)
+library(gridExtra)
+```
+
+## Set-Up
+
+```{r}
+# Layout Matrix
+layout_matrix <- matrix(c(NA, NA, "0-0", NA, "legend", 
+                           NA, "1-0", NA, "0-1", NA, 
+                           "2-0", NA, "1-1", NA, "0-2", 
+                           "3-0", NA, "2-1", NA, "1-2", 
+                           NA, "3-1", NA, "2-2", NA, 
+                           NA, NA, "3-2", NA, NA), 
+                         nrow = 6, ncol = 5, byrow = TRUE)
+# Layout Vector
+layout_vector <- as.vector(t(layout_matrix))
+```
+
+```{r}
+# List of Colors
+pitch_colors <- c(
+  "CH/SP" = "#00FF00",            # Green
+  Curveball = "#00FFFF",          # Cyan
+  Cutter = "#8B4513",             # Brown
+  FastSink = "#FF0000",           # Red
+  Knuckleball = "#800080",        # Purple
+  Other = "grey",                 # Grey
+  Slider = "#FFDB58"              # Yellow
+)
+```
+
+## Legend
+
+```{r}
+extract_legend <- function(plot){
+  g <- ggplotGrob(plot)
+  legend <- g$grobs[which(sapply(g$grobs, function(x) x$name) == "guide-box")]
+  return(legend[[1]])
+}
+```
+
+
+## Usage Tree
+
+```{r}
+usage_tree <- function(pitcher_name, batter){
+  # Filter the data based on the inputs
+  filtered_data <- output %>%
+    filter(Pitcher == pitcher_name, BatterSide == batter)
+  
+  # Count occurrences of each Pitch
+  pitch_type_counts <- filtered_data %>%
+    group_by(Pitch) %>%
+    summarise(total = sum(n)) %>%
+    arrange(desc(total))
+  
+  # Ordered Pitch levels
+  ordered_pitch_types <- pitch_type_counts$Pitch
+  
+  # Unique counts
+  unique_counts <- unique(filtered_data$Count)
+  
+  # Create a list to hold the plots
+  plot_list <- list()
+  
+  # Generate a pie chart for each count
+  for (count in unique_counts) {
+    # Filter data for the specific count
+    count_data <- filtered_data %>%
+      filter(Count == count)
+    
+    # Create the pie chart
+    plot <- ggplot(count_data, aes(x = "", y = n, fill = Pitch)) +
+      geom_bar(stat = "identity", width = 1) +
+      scale_fill_manual(values = pitch_colors) +
+      coord_polar(theta = "y") +
+      geom_text(aes(label = ifelse(n / sum(n) >= 0.1, paste0(round(n / sum(n) * 100), "%"), "")), 
+                position = position_stack(vjust = 0.5)) +
+      labs(title = paste("Count:", count, "(n =", sum(count_data$n), ")"),
+           x = NULL, y = NULL) +
+      theme_void() +
+      theme(legend.position = "none")
+    
+    # Add the plot to the list
+    plot_list[[count]] <- plot
+  }
+  
+  # Extract all unique Pitch values from the filtered data
+  all_pitch_types <- unique(filtered_data$Pitch)
+  
+  # Create a dummy plot with all pitch types to extract the legend
+  dummy_data <- data.frame(Pitch = ordered_pitch_types, n = 1)
+  dummy_plot <- ggplot(dummy_data, aes(x = "", y = n, fill = Pitch)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = pitch_colors, breaks = ordered_pitch_types) +
+    theme_void() +
+    theme(legend.title = element_blank())
+  legend <- extract_legend(dummy_plot)
+  
+  # Create a common title for all plots
+  common_title <- paste(pitcher_name, "vs", tolower(batter), "handed batters")
+  
+  # Convert the plot list to match the layout matrix
+  arranged_plots <- lapply(layout_vector, function(position) {
+    if (is.na(position)) {
+      ggplot() + theme_void()
+    } 
+    else {
+      if (position %in% names(plot_list)) {
+        plot_list[[position]]
+      } 
+      else if(position == "legend"){
+        legend
+      }
+      else {
+        ggplot() + theme_void() + labs(title = paste("Count:", position,"(n = 0)"))
+      }
+    }
+  })
+  
+  # Combine plots into a grid with a common title
+  plot_grid <- gridExtra::grid.arrange(grobs = arranged_plots, ncol = 5, top = common_title)
+  
+  # Return the combined plot
+  return(plot_grid)
+}
+```
+
+## Run
+```{r}
+output <- read.csv("C:/Users/richa/OneDrive/Documents/Hyannis Harbor Hawks/Pitcher Usage Trees/Pitch_Tree_Data_NCAA_2024.csv")
+```
+
+## Pitch Mix
+```{r}
+df_dz <- df %>%
+  filter(Pitcher == "Moore, Jacob")
+table(df_dz$TaggedPitchType)
+```
